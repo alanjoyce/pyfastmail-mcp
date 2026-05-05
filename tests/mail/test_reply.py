@@ -32,6 +32,8 @@ _ORIGINAL_EMAIL = {
     "replyTo": None,
     "messageId": ["<msg1@example.com>"],
     "references": ["<ref1@example.com>"],
+    "sentAt": "2026-05-04T18:47:00Z",
+    "receivedAt": "2026-05-04T18:47:30Z",
     "bodyValues": {"1": {"value": "Original text"}},
     "textBody": [{"partId": "1", "type": "text/plain"}],
 }
@@ -63,7 +65,12 @@ async def test_reply_ok():
         email_id="orig1", text_body="My reply"
     )
     data = json.loads(result)
-    assert data == {"sent": True, "emailId": "e2", "submissionId": "s2"}
+    assert data == {
+        "sent": True,
+        "emailId": "e2",
+        "submissionId": "s2",
+        "mailbox": "Sent",
+    }
 
 
 async def test_reply_adds_re_prefix():
@@ -117,6 +124,124 @@ async def test_reply_quotes_original():
     body = email_obj["bodyValues"]["body"]["value"]
     assert "My reply" in body
     assert "> Original text" in body
+    # Attribution preamble — Gmail / Apple Mail / Fastmail recognise this
+    # pattern and collapse the quote into a "show trimmed content" affordance.
+    assert "Bob <bob@example.com> wrote:" in body
+    assert "On Mon, 4 May 2026 at 18:47 UTC" in body
+
+
+async def test_reply_attribution_falls_back_to_received_at():
+    """When the original has no sentAt, attribution uses receivedAt."""
+    email = {**_ORIGINAL_EMAIL}
+    email.pop("sentAt")
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(email),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(email_id="orig1", text_body="reply")
+    email_obj = client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+    body = email_obj["bodyValues"]["body"]["value"]
+    assert "On Mon, 4 May 2026 at 18:47 UTC" in body  # from receivedAt
+
+
+async def test_reply_attribution_handles_missing_dates():
+    """No sentAt and no receivedAt → graceful fallback, no crash."""
+    email = {**_ORIGINAL_EMAIL}
+    email.pop("sentAt")
+    email.pop("receivedAt")
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(email),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(email_id="orig1", text_body="reply")
+    email_obj = client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+    body = email_obj["bodyValues"]["body"]["value"]
+    assert "Bob <bob@example.com> wrote:" in body
+    assert "> Original text" in body
+
+
+async def test_reply_with_html_body():
+    """When html_body is provided, the draft has a multipart text+HTML body."""
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(
+        email_id="orig1",
+        text_body="My plain reply",
+        html_body="<p>My <strong>HTML</strong> reply</p>",
+    )
+    email_obj = client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+    # Both bodies present.
+    assert "body" in email_obj["bodyValues"]
+    assert "htmlBody" in email_obj["bodyValues"]
+    assert email_obj["textBody"] == [{"partId": "body", "type": "text/plain"}]
+    assert email_obj["htmlBody"] == [{"partId": "htmlBody", "type": "text/html"}]
+    # HTML body has the user's content + the attributed blockquote.
+    html_value = email_obj["bodyValues"]["htmlBody"]["value"]
+    assert "<p>My <strong>HTML</strong> reply</p>" in html_value
+    assert "Bob &lt;bob@example.com&gt; wrote:" in html_value
+    assert '<blockquote type="cite"' in html_value
+
+
+async def test_reply_html_quote_prefers_original_html_body():
+    """If the original had an HTML body, we reuse it inside the blockquote."""
+    email = {
+        **_ORIGINAL_EMAIL,
+        "bodyValues": {
+            "1": {"value": "Original text"},
+            "2": {"value": "<p>Original <em>html</em></p>"},
+        },
+        "htmlBody": [{"partId": "2", "type": "text/html"}],
+    }
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(email),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(
+        email_id="orig1", text_body="reply", html_body="<p>my reply</p>"
+    )
+    email_obj = client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+    html_value = email_obj["bodyValues"]["htmlBody"]["value"]
+    assert "<p>Original <em>html</em></p>" in html_value
+
+
+async def test_reply_html_quote_falls_back_to_text_body():
+    """When the original lacks an HTML body, the quote escapes the text body."""
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(
+        email_id="orig1", text_body="reply", html_body="<p>my reply</p>"
+    )
+    email_obj = client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+    html_value = email_obj["bodyValues"]["htmlBody"]["value"]
+    assert "<p>Original text</p>" in html_value
+
+
+async def test_reply_without_html_body_stays_text_only():
+    """Backwards-compatible: omitting html_body produces a text-only reply."""
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(email_id="orig1", text_body="reply")
+    email_obj = client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+    assert "htmlBody" not in email_obj
+    assert "htmlBody" not in email_obj["bodyValues"]
 
 
 async def test_reply_all_adds_cc():
