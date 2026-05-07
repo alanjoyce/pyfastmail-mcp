@@ -7,7 +7,10 @@ from mcp.server.fastmcp import FastMCP
 
 from pyfastmail_mcp.client import USING_SUBMISSION, JMAPClient
 from pyfastmail_mcp.exceptions import FastmailError, IdentityNotFoundError
-from pyfastmail_mcp.tools.mail.actions import _humanize_submission_errors
+from pyfastmail_mcp.tools.mail.actions import (
+    _build_submission_args,
+    _humanize_submission_errors,
+)
 from pyfastmail_mcp.tools.mail.identities import _find_identity
 from pyfastmail_mcp.tools.mail.reply import _get_email, _quote_body
 
@@ -19,6 +22,7 @@ def register(server: FastMCP, client: JMAPClient) -> None:
         to: list[str],
         text_body: str = "",
         identity_id: str | None = None,
+        save_to_sent: bool = True,
     ) -> str:
         """Forward an email to one or more recipients, preserving the original content.
 
@@ -27,6 +31,9 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             to: List of recipient email addresses.
             text_body: Optional introductory text prepended before the quoted original.
             identity_id: Sender identity ID; auto-selects first if omitted.
+            save_to_sent: If True (default), a copy of the forwarded message is
+                saved to the account's Sent mailbox. If False, the draft is
+                destroyed after send. See ``mail_send_email`` for details.
         """
         try:
             original = _get_email(client, email_id)
@@ -56,6 +63,16 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                 "textBody": [{"partId": "body", "type": "text/plain"}],
             }
 
+            submission_args, mailbox_result = _build_submission_args(
+                client,
+                account_id=account_id,
+                identity_id=identity["id"],
+                drafts_id=drafts["id"],
+                save_to_sent=save_to_sent,
+                from_email=identity["email"],
+                recipient_emails=list(to),
+            )
+
             responses = client.call(
                 USING_SUBMISSION,
                 [
@@ -64,20 +81,7 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                         {"accountId": account_id, "create": {"draft": email_obj}},
                         "e",
                     ],
-                    [
-                        "EmailSubmission/set",
-                        {
-                            "accountId": account_id,
-                            "create": {
-                                "sub": {
-                                    "emailId": "#draft",
-                                    "identityId": identity["id"],
-                                }
-                            },
-                            "onSuccessDestroyEmail": ["#sub"],
-                        },
-                        "s",
-                    ],
+                    ["EmailSubmission/set", submission_args, "s"],
                 ],
             )
             _, email_data, _ = responses[0]
@@ -94,6 +98,7 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                     "sent": True,
                     "emailId": created_email.get("id"),
                     "submissionId": created_sub.get("id"),
+                    "mailbox": mailbox_result,
                 },
                 indent=2,
             )

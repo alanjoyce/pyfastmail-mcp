@@ -61,7 +61,12 @@ async def test_forward_ok():
         email_id="orig1", to=["carol@example.com"]
     )
     data = json.loads(result)
-    assert data == {"sent": True, "emailId": "e2", "submissionId": "s2"}
+    assert data == {
+        "sent": True,
+        "emailId": "e2",
+        "submissionId": "s2",
+        "mailbox": "Sent",
+    }
 
 
 async def test_forward_adds_fwd_prefix():

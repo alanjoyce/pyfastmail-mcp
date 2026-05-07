@@ -42,7 +42,12 @@ async def test_send_email_ok():
         to=["bob@example.com"], subject="Hi", text_body="Hello"
     )
     data = json.loads(result)
-    assert data == {"sent": True, "emailId": "e1", "submissionId": "s1"}
+    assert data == {
+        "sent": True,
+        "emailId": "e1",
+        "submissionId": "s1",
+        "mailbox": "Sent",
+    }
 
 
 async def test_send_email_with_cc_bcc_html():
@@ -234,3 +239,141 @@ async def test_send_invalid_email():
         )
     )
     assert "Email is invalid" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# save_to_sent: default flow uses onSuccessUpdateEmail to move Drafts -> Sent.
+# ---------------------------------------------------------------------------
+
+def _submission_args_from_call(client):
+    """Extract the EmailSubmission/set args dict from the last client.call."""
+    # client.call(using, method_calls) — we want the 2nd method call's args.
+    method_calls = client.call.call_args_list[-1][0][1]
+    return method_calls[1][1]
+
+
+async def test_send_includes_explicit_envelope():
+    """Submission carries an explicit envelope with mailFrom + dedup'd rcptTo.
+
+    JMAP allows envelope to be omitted (server derives from headers), but in
+    practice that produced submissions reporting success while delivering to
+    nobody. We always send it explicitly, matching the Fastmail web client.
+    """
+    client = mock_client()
+    client.call.side_effect = [_identity_response(), _send_response()]
+    await _tool(client, "mail_send_email")(
+        to=["bob@example.com", "BOB@example.com"],  # case-insensitive dup
+        cc=["carol@example.com"],
+        bcc=["dave@example.com"],
+        subject="Hi",
+        text_body="Hello",
+    )
+    sub_create = _submission_args_from_call(client)["create"]["sub"]
+    envelope = sub_create["envelope"]
+    assert envelope["mailFrom"] == {"email": "alice@example.com"}
+    rcpt_emails = [r["email"] for r in envelope["rcptTo"]]
+    # Dedup is case-insensitive, order is first-seen, Bcc IS included.
+    assert rcpt_emails == ["bob@example.com", "carol@example.com", "dave@example.com"]
+
+
+async def test_send_default_uses_on_success_update_email():
+    """Default path: EmailSubmission/set carries onSuccessUpdateEmail."""
+    client = mock_client()
+    # Deterministic mailbox so we can assert on the patch paths.
+    client.get_mailbox_by_role.side_effect = lambda role: {
+        "drafts": {"id": "drafts-id"},
+        "sent": {"id": "sent-id"},
+    }[role]
+    client.call.side_effect = [_identity_response(), _send_response()]
+
+    result = await _tool(client, "mail_send_email")(
+        to=["bob@example.com"], subject="Hi", text_body="Hello"
+    )
+    data = json.loads(result)
+    assert data["mailbox"] == "Sent"
+
+    sub_args = _submission_args_from_call(client)
+    assert "onSuccessUpdateEmail" in sub_args
+    assert "onSuccessDestroyEmail" not in sub_args
+    patch = sub_args["onSuccessUpdateEmail"]["#sub"]
+    assert patch["mailboxIds/drafts-id"] is None
+    assert patch["mailboxIds/sent-id"] is True
+    assert patch["keywords/$draft"] is None
+
+
+async def test_send_save_to_sent_false_uses_destroy():
+    """Opt-out: draft is destroyed after send, mailbox field reports so."""
+    client = mock_client()
+    client.get_mailbox_by_role.side_effect = lambda role: {
+        "drafts": {"id": "drafts-id"},
+        "sent": {"id": "sent-id"},
+    }[role]
+    client.call.side_effect = [_identity_response(), _send_response()]
+
+    result = await _tool(client, "mail_send_email")(
+        to=["bob@example.com"],
+        subject="Hi",
+        text_body="Hello",
+        save_to_sent=False,
+    )
+    data = json.loads(result)
+    assert data["mailbox"] == "destroyed"
+
+    sub_args = _submission_args_from_call(client)
+    assert sub_args["onSuccessDestroyEmail"] == ["#sub"]
+    assert "onSuccessUpdateEmail" not in sub_args
+
+
+async def test_send_missing_sent_role_falls_back_to_destroy():
+    """If the account has no Sent mailbox, fall back and report mailbox=null."""
+    from pyfastmail_mcp.exceptions import MailboxNotFoundError
+
+    client = mock_client()
+
+    def _role(role):
+        if role == "drafts":
+            return {"id": "drafts-id"}
+        raise MailboxNotFoundError("no sent")
+
+    client.get_mailbox_by_role.side_effect = _role
+    client.call.side_effect = [_identity_response(), _send_response()]
+
+    result = await _tool(client, "mail_send_email")(
+        to=["bob@example.com"], subject="Hi", text_body="Hello"
+    )
+    data = json.loads(result)
+    assert data["sent"] is True
+    assert data["mailbox"] is None
+
+    sub_args = _submission_args_from_call(client)
+    assert sub_args["onSuccessDestroyEmail"] == ["#sub"]
+    assert "onSuccessUpdateEmail" not in sub_args
+
+
+async def test_send_submission_failure_leaves_draft_intact():
+    """Draft retention: on submission failure, we do NOT issue a destroy call."""
+    client = mock_client()
+    client.get_mailbox_by_role.side_effect = lambda role: {
+        "drafts": {"id": "drafts-id"},
+        "sent": {"id": "sent-id"},
+    }[role]
+    client.call.side_effect = [
+        _identity_response(),
+        [
+            ("Email/set", {"created": {"draft": {"id": "e1"}}}, "e"),
+            (
+                "EmailSubmission/set",
+                {"notCreated": {"sub": {"type": "forbidden"}}},
+                "s",
+            ),
+        ],
+    ]
+
+    result = await _tool(client, "mail_send_email")(
+        to=["bob@example.com"], subject="Hi", text_body="Hello"
+    )
+    data = json.loads(result)
+    assert "error" in data
+    # Exactly two client.call invocations: Identity/get and the send batch.
+    # No follow-up Email/set destroy was issued.
+    assert client.call.call_count == 2
