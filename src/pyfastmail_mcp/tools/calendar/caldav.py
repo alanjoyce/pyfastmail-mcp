@@ -1,10 +1,11 @@
 """CalDAV tools — calendars via CalDAV (RFC 4791)."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import defusedxml.ElementTree as ET
 import icalendar
+import recurring_ical_events
 import requests
 from mcp.server.fastmcp import FastMCP
 
@@ -88,9 +89,24 @@ def _calendar_query_xml(start: str, end: str) -> str:
 </C:calendar-query>"""
 
 
-def _parse_events(xml_text: str) -> list[dict]:
+def _parse_events(
+    xml_text: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict]:
+    """Parse a CalDAV REPORT response and emit one row per actual event
+    occurrence inside ``[window_start, window_end)``.
+
+    A single iCalendar resource (one ``<C:calendar-data>`` block) may contain
+    a master VEVENT plus any number of ``RECURRENCE-ID`` overrides. The CalDAV
+    server's ``time-range`` filter only decides whether to *include* the
+    resource; it does not expand the RRULE. We expand it here using
+    ``recurring_ical_events`` so each returned row corresponds to a real
+    occurrence with the correct ``dtstart``, with ``EXDATE`` exclusions and
+    per-instance overrides honoured.
+    """
     root = ET.fromstring(xml_text)
-    results = []
+    results: list[dict] = []
     for response in root.iter(_tag(_DAV_NS, "response")):
         href_el = response.find(_tag(_DAV_NS, "href"))
         href = href_el.text.strip() if href_el is not None and href_el.text else ""
@@ -101,10 +117,13 @@ def _parse_events(xml_text: str) -> list[dict]:
 
         try:
             cal = icalendar.Calendar.from_ical(cal_data_el.text)
+            occurrences = recurring_ical_events.of(cal).between(
+                window_start, window_end
+            )
         except (FastmailError, requests.RequestException, ValueError):
             continue
 
-        for comp in cal.walk():
+        for comp in occurrences:
             if comp.name != "VEVENT":
                 continue
             dtstart = comp.get("DTSTART")
@@ -174,7 +193,7 @@ def register(server: FastMCP, dav_client: DAVClient) -> None:
             dav_client.validate_dav_url(url)
             body = _calendar_query_xml(start_str, end_str)
             resp = dav_client.report(url, body)
-            events = _parse_events(resp.text)
+            events = _parse_events(resp.text, start_dt, end_dt)
             return json.dumps(events, indent=2)
         except (FastmailError, requests.RequestException, ValueError) as exc:
             return json.dumps({"error": str(exc)})
