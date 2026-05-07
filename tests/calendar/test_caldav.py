@@ -213,7 +213,11 @@ async def test_list_events_returns_events():
     fn = _tool(client, "calendar_list_events")
 
     result = json.loads(
-        await fn(calendar_href="/dav/calendars/user/user@example.com/default/")
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-03-01",
+            end_date="2026-03-31",
+        )
     )
 
     assert len(result) == 1
@@ -329,9 +333,170 @@ END:VCALENDAR"""
     fn = _tool(client, "calendar_list_events")
 
     result = json.loads(
-        await fn(calendar_href="/dav/calendars/user/user@example.com/default/")
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-03-01",
+            end_date="2026-03-31",
+        )
     )
 
     assert len(result) == 2
     assert result[0]["summary"] == "Second"
     assert result[1]["summary"] == "First"
+
+
+# --- recurrence expansion tests ---
+#
+# A CalDAV time-range REPORT returns the master VEVENT (with its original
+# DTSTART, possibly years before the requested window) when an RRULE produces
+# any occurrence inside the window. The MCP must expand the rule and emit one
+# row per real occurrence with the correct dtstart, honouring EXDATE
+# exclusions and RECURRENCE-ID per-instance overrides.
+
+
+def _xml_with_ical(ical_text: str, href: str = "/event.ics") -> str:
+    return f"""<?xml version="1.0"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>{href}</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"e"</D:getetag>
+        <C:calendar-data>{ical_text}</C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+
+async def test_list_events_expands_weekly_rrule_with_master_before_window():
+    """Master DTSTART is in 2019; RRULE produces weekly occurrences. A query
+    for a single week in 2026 should return only that week's occurrence,
+    with dtstart inside the window — not the master's 2019 dtstart."""
+    ical = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:garbage@example.com
+SUMMARY:put garbage out
+DTSTART:20190625T030000Z
+DTEND:20190625T040000Z
+RRULE:FREQ=WEEKLY;BYDAY=TU
+END:VEVENT
+END:VCALENDAR"""
+    client = _client()
+    client.report.return_value = _mock_response(_xml_with_ical(ical))
+    fn = _tool(client, "calendar_list_events")
+
+    result = json.loads(
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-05-06",
+            end_date="2026-05-13",
+        )
+    )
+
+    assert len(result) == 1
+    assert "2026-05" in result[0]["dtstart"]
+    assert result[0]["uid"] == "garbage@example.com"
+
+
+async def test_list_events_honours_exdate():
+    ical = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:cleaning@example.com
+SUMMARY:Cleaning
+DTSTART:20260504T180000Z
+DTEND:20260504T200000Z
+RRULE:FREQ=WEEKLY;COUNT=4
+EXDATE:20260518T180000Z
+END:VEVENT
+END:VCALENDAR"""
+    client = _client()
+    client.report.return_value = _mock_response(_xml_with_ical(ical))
+    fn = _tool(client, "calendar_list_events")
+
+    result = json.loads(
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-05-01",
+            end_date="2026-06-01",
+        )
+    )
+
+    starts = [e["dtstart"] for e in result]
+    assert len(starts) == 3, (
+        f"expected 4 weekly occurrences minus 1 EXDATE, got {starts}"
+    )
+    assert not any("2026-05-18" in s for s in starts)
+
+
+async def test_list_events_applies_recurrence_id_override():
+    """A RECURRENCE-ID override changes one occurrence's time and summary;
+    the expanded result should reflect the override, not the master."""
+    ical = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:standup@example.com
+SUMMARY:Standup
+DTSTART:20260504T160000Z
+DTEND:20260504T163000Z
+RRULE:FREQ=WEEKLY;COUNT=3
+END:VEVENT
+BEGIN:VEVENT
+UID:standup@example.com
+RECURRENCE-ID:20260511T160000Z
+SUMMARY:Standup (rescheduled)
+DTSTART:20260511T173000Z
+DTEND:20260511T180000Z
+END:VEVENT
+END:VCALENDAR"""
+    client = _client()
+    client.report.return_value = _mock_response(_xml_with_ical(ical))
+    fn = _tool(client, "calendar_list_events")
+
+    result = json.loads(
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-05-01",
+            end_date="2026-05-25",
+        )
+    )
+
+    assert len(result) == 3
+    overridden = [e for e in result if "rescheduled" in e["summary"]]
+    assert len(overridden) == 1
+    assert "2026-05-11" in overridden[0]["dtstart"]
+    assert "17:30" in overridden[0]["dtstart"]
+
+
+async def test_list_events_excludes_one_off_outside_window():
+    """A non-recurring event whose DTSTART is outside the window must not be
+    returned. Old behaviour ignored the window entirely."""
+    ical = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:past@example.com
+SUMMARY:Old one-off
+DTSTART:20200101T120000Z
+DTEND:20200101T130000Z
+END:VEVENT
+END:VCALENDAR"""
+    client = _client()
+    client.report.return_value = _mock_response(_xml_with_ical(ical))
+    fn = _tool(client, "calendar_list_events")
+
+    result = json.loads(
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-05-01",
+            end_date="2026-06-01",
+        )
+    )
+
+    assert result == []
