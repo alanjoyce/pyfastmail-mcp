@@ -249,6 +249,7 @@ async def test_list_events_uses_explicit_dates():
         calendar_href="/dav/calendars/user/user@example.com/default/",
         start_date="2026-03-01",
         end_date="2026-03-31",
+        tz="UTC",  # opt out of the household-default Pacific tz
     )
 
     body = client.report.call_args[0][1]
@@ -521,8 +522,11 @@ def _query_body_window(client) -> tuple[str, str]:
     return m.group(1), m.group(2)
 
 
-async def test_list_events_default_tz_is_utc():
-    """tz omitted -> bare dates resolve to UTC midnights, end+1 day."""
+async def test_list_events_default_tz_is_pacific():
+    """tz omitted -> defaults to America/Los_Angeles (household tz).
+
+    May 6 00:00 PDT = May 6 07:00 UTC; May 14 00:00 PDT = May 14 07:00 UTC.
+    """
     client = _client()
     client.report.return_value = _mock_response(_XML_NO_EVENTS)
     fn = _tool(client, "calendar_list_events")
@@ -534,8 +538,26 @@ async def test_list_events_default_tz_is_utc():
     )
 
     start, end = _query_body_window(client)
+    assert start == "20260506T070000Z"
+    assert end == "20260514T070000Z"  # inclusive: end_date + 1 day in PT
+
+
+async def test_list_events_explicit_utc_overrides_default():
+    """tz='UTC' explicitly opts out of the Pacific default."""
+    client = _client()
+    client.report.return_value = _mock_response(_XML_NO_EVENTS)
+    fn = _tool(client, "calendar_list_events")
+
+    await fn(
+        calendar_href="/dav/calendars/user/user@example.com/default/",
+        start_date="2026-05-06",
+        end_date="2026-05-13",
+        tz="UTC",
+    )
+
+    start, end = _query_body_window(client)
     assert start == "20260506T000000Z"
-    assert end == "20260514T000000Z"  # inclusive: end_date + 1 day
+    assert end == "20260514T000000Z"
 
 
 async def test_list_events_pacific_tz_shifts_window():

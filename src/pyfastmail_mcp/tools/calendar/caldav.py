@@ -216,7 +216,7 @@ def register(server: FastMCP, dav_client: DAVClient) -> None:
         calendar_href: str,
         start_date: str | None = None,
         end_date: str | None = None,
-        tz: str = "UTC",
+        tz: str = "America/Los_Angeles",
     ) -> str:
         """List events in a CalDAV calendar within a date range.
 
@@ -229,9 +229,13 @@ def register(server: FastMCP, dav_client: DAVClient) -> None:
                 upper bound becomes midnight of (end_date + 1 day) in ``tz``.
                 Defaults to seven days after ``start_date``.
             tz: IANA timezone name used to anchor bare dates (e.g.
-                ``"America/Los_Angeles"``, ``"Europe/London"``). Defaults to
-                ``"UTC"``. Has no effect on ISO datetimes that already carry
-                an offset.
+                ``"America/Los_Angeles"``, ``"Europe/London"``, ``"UTC"``).
+                Defaults to ``"America/Los_Angeles"`` — this MCP is
+                deployed for a Pacific-time household, so PT is the right
+                default and callers don't have to remember to pass it.
+                Override only for queries that genuinely span a different
+                timezone. Has no effect on ISO datetimes that already
+                carry an offset.
         """
         try:
             start_dt, end_dt = _parse_window(start_date, end_date, tz)
