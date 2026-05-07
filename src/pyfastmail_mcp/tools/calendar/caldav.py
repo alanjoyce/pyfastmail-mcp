@@ -2,6 +2,7 @@
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import defusedxml.ElementTree as ET
 import icalendar
@@ -143,6 +144,60 @@ def _parse_events(
     return results
 
 
+def _parse_window(
+    start_date: str | None,
+    end_date: str | None,
+    tz: str,
+) -> tuple[datetime, datetime]:
+    """Convert the user-supplied window into a ``[start_dt, end_dt)`` UTC pair.
+
+    Bare-date strings (``YYYY-MM-DD``) are anchored at midnight in ``tz``,
+    not UTC. Without this, a Pacific-time caller passing
+    ``end_date="2026-05-13"`` would lose every event between 17:00 PT on
+    2026-05-12 and 23:59 PT on 2026-05-13 — about a day's worth of
+    real-world events at the boundary of the requested window.
+
+    ``end_date`` is treated as **inclusive**: the upper bound becomes
+    midnight of ``end_date + 1 day`` in ``tz``. So a query for
+    ``start_date="2026-05-06", end_date="2026-05-13"`` with
+    ``tz="America/Los_Angeles"`` covers the entire week from 2026-05-06
+    00:00 PT through 2026-05-13 23:59 PT.
+
+    If a caller passes a full ISO datetime (``YYYY-MM-DDTHH:MM:SS`` or
+    ``...±HH:MM``) the value is honoured as-is — its own offset wins, and
+    if it's tz-naive it's localized in ``tz``.
+    """
+    try:
+        zone = ZoneInfo(tz)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Unknown timezone: {tz}") from exc
+
+    def _localize(s: str, *, anchor_to_next_day: bool) -> datetime:
+        parsed = datetime.fromisoformat(s)
+        is_date_only = "T" not in s and " " not in s
+        if is_date_only and anchor_to_next_day:
+            parsed = parsed + timedelta(days=1)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=zone)
+        return parsed.astimezone(timezone.utc)
+
+    if start_date:
+        start_dt = _localize(start_date, anchor_to_next_day=False)
+    else:
+        now_utc = datetime.now(tz=timezone.utc)
+        local_today = now_utc.astimezone(zone).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        start_dt = local_today.astimezone(timezone.utc)
+
+    if end_date:
+        end_dt = _localize(end_date, anchor_to_next_day=True)
+    else:
+        end_dt = start_dt + timedelta(days=7)
+
+    return start_dt, end_dt
+
+
 def register(server: FastMCP, dav_client: DAVClient) -> None:
     @server.tool()
     async def calendar_list_calendars() -> str:
@@ -161,26 +216,25 @@ def register(server: FastMCP, dav_client: DAVClient) -> None:
         calendar_href: str,
         start_date: str | None = None,
         end_date: str | None = None,
+        tz: str = "UTC",
     ) -> str:
         """List events in a CalDAV calendar within a date range.
 
         Args:
             calendar_href: The href of the calendar (from calendar_list_calendars).
-            start_date: ISO date string (YYYY-MM-DD). Defaults to today.
-            end_date: ISO date string (YYYY-MM-DD). Defaults to 7 days from start.
+            start_date: ISO date string. Bare dates (YYYY-MM-DD) are anchored
+                at midnight in ``tz``. Full datetimes are honoured as given.
+                Defaults to today (in ``tz``).
+            end_date: ISO date string. Bare dates are **inclusive** — the
+                upper bound becomes midnight of (end_date + 1 day) in ``tz``.
+                Defaults to seven days after ``start_date``.
+            tz: IANA timezone name used to anchor bare dates (e.g.
+                ``"America/Los_Angeles"``, ``"Europe/London"``). Defaults to
+                ``"UTC"``. Has no effect on ISO datetimes that already carry
+                an offset.
         """
         try:
-            now = datetime.now(tz=timezone.utc)
-            start_dt = (
-                datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
-                if start_date
-                else now.replace(hour=0, minute=0, second=0, microsecond=0)
-            )
-            end_dt = (
-                datetime.fromisoformat(end_date).replace(tzinfo=timezone.utc)
-                if end_date
-                else start_dt + timedelta(days=7)
-            )
+            start_dt, end_dt = _parse_window(start_date, end_date, tz)
 
             start_str = start_dt.strftime("%Y%m%dT%H%M%SZ")
             end_str = end_dt.strftime("%Y%m%dT%H%M%SZ")

@@ -253,7 +253,8 @@ async def test_list_events_uses_explicit_dates():
 
     body = client.report.call_args[0][1]
     assert "20260301T000000Z" in body
-    assert "20260331T000000Z" in body
+    # end_date is inclusive: 2026-03-31 -> exclusive upper bound 2026-04-01.
+    assert "20260401T000000Z" in body
 
 
 async def test_list_events_prepends_caldav_base_for_relative_href():
@@ -500,3 +501,130 @@ END:VCALENDAR"""
     )
 
     assert result == []
+
+
+# --- timezone-aware window parsing tests ---
+#
+# Bare-date windows are interpreted in the supplied tz (default UTC), with
+# end_date inclusive (next-day midnight). The CalDAV REPORT body always
+# carries UTC timestamps; what matters is which UTC range the dates resolve
+# to.
+
+
+def _query_body_window(client) -> tuple[str, str]:
+    """Pull start/end Z-stamps out of the REPORT body sent to the server."""
+    body = client.report.call_args[0][1]
+    import re
+
+    m = re.search(r'start="([^"]+)"\s+end="([^"]+)"', body)
+    assert m, f"could not find time-range in REPORT body: {body!r}"
+    return m.group(1), m.group(2)
+
+
+async def test_list_events_default_tz_is_utc():
+    """tz omitted -> bare dates resolve to UTC midnights, end+1 day."""
+    client = _client()
+    client.report.return_value = _mock_response(_XML_NO_EVENTS)
+    fn = _tool(client, "calendar_list_events")
+
+    await fn(
+        calendar_href="/dav/calendars/user/user@example.com/default/",
+        start_date="2026-05-06",
+        end_date="2026-05-13",
+    )
+
+    start, end = _query_body_window(client)
+    assert start == "20260506T000000Z"
+    assert end == "20260514T000000Z"  # inclusive: end_date + 1 day
+
+
+async def test_list_events_pacific_tz_shifts_window():
+    """tz='America/Los_Angeles' -> bare dates resolve to PT midnights.
+
+    May 6 00:00 PDT = May 6 07:00 UTC; May 14 00:00 PDT = May 14 07:00 UTC.
+    """
+    client = _client()
+    client.report.return_value = _mock_response(_XML_NO_EVENTS)
+    fn = _tool(client, "calendar_list_events")
+
+    await fn(
+        calendar_href="/dav/calendars/user/user@example.com/default/",
+        start_date="2026-05-06",
+        end_date="2026-05-13",
+        tz="America/Los_Angeles",
+    )
+
+    start, end = _query_body_window(client)
+    assert start == "20260506T070000Z"
+    assert end == "20260514T070000Z"
+
+
+async def test_list_events_pt_window_captures_evening_event_on_end_date():
+    """End-to-end: a PT 8 PM event on the end_date is in-window when
+    tz='America/Los_Angeles' is supplied. With the old UTC-naive parsing
+    it would have fallen outside.
+    """
+    ical = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:garbage@example.com
+SUMMARY:put garbage out
+DTSTART:20260513T030000Z
+DTEND:20260513T040000Z
+END:VEVENT
+END:VCALENDAR"""
+    client = _client()
+    client.report.return_value = _mock_response(_xml_with_ical(ical))
+    fn = _tool(client, "calendar_list_events")
+
+    result = json.loads(
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-05-06",
+            end_date="2026-05-12",
+            tz="America/Los_Angeles",
+        )
+    )
+
+    # 2026-05-13 03:00 UTC = 2026-05-12 20:00 PT — Tuesday evening of the
+    # requested PT window. Must be returned.
+    assert len(result) == 1
+    assert result[0]["uid"] == "garbage@example.com"
+
+
+async def test_list_events_iso_datetime_offset_preserved():
+    """A caller passing a tz-aware ISO datetime keeps that offset; the tz
+    parameter does not stomp it."""
+    client = _client()
+    client.report.return_value = _mock_response(_XML_NO_EVENTS)
+    fn = _tool(client, "calendar_list_events")
+
+    await fn(
+        calendar_href="/dav/calendars/user/user@example.com/default/",
+        start_date="2026-05-06T12:00:00-07:00",
+        end_date="2026-05-06T18:00:00-07:00",
+        tz="UTC",  # should not affect the already-tz-aware values
+    )
+
+    start, end = _query_body_window(client)
+    assert start == "20260506T190000Z"  # 12:00-07 = 19:00Z
+    assert end == "20260507T010000Z"  # 18:00-07 = 01:00Z next day
+
+
+async def test_list_events_unknown_tz_returns_error():
+    client = _client()
+    fn = _tool(client, "calendar_list_events")
+
+    result = json.loads(
+        await fn(
+            calendar_href="/dav/calendars/user/user@example.com/default/",
+            start_date="2026-05-06",
+            end_date="2026-05-13",
+            tz="Mars/Olympus_Mons",
+        )
+    )
+
+    assert "error" in result
+    assert "Mars/Olympus_Mons" in result["error"]
+
