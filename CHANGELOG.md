@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.3 (2026-05-28)
+
+### Added (Watson carry-patch)
+- `tools/mail/disclosure.py` — opt-in AI-agent disclosure footer injection
+  for `mail_send_email`, `mail_reply_to_email`, and `mail_forward_email`.
+  When `PYFASTMAIL_DISCLOSURE_TEXT` is set, every outbound whose recipient
+  set includes a non-resident (per `PYFASTMAIL_RESIDENT_ADDRESSES`) gets
+  the disclosure appended to both `text_body` and `html_body`. The HTML
+  form is wrapped in `<p><em>…</em></p>` at the end; if
+  `PYFASTMAIL_DISCLOSURE_HTML` is unset, the text form is HTML-escaped
+  and used. Idempotent — skips injection when the disclosure substring
+  is already present in the body (so callers transitioning from prose
+  to runtime enforcement don't double up).
+- 15 unit tests in `tests/mail/test_disclosure.py` covering the recipient
+  classifier, env-var gating, idempotency, HTML/text variants, and
+  whitespace / case normalisation.
+
+Without env vars set the module is a no-op — upstream and other consumers
+of this fork get no behavioural change. Carry-patch retained on the
+`alanjoyce/pyfastmail-mcp` fork; not for upstream PR.
+
 ## 0.3.2 (2026-03-31)
 
 ### Documentation

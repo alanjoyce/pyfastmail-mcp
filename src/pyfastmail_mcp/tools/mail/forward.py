@@ -11,6 +11,7 @@ from pyfastmail_mcp.tools.mail.actions import (
     _build_submission_args,
     _humanize_submission_errors,
 )
+from pyfastmail_mcp.tools.mail.disclosure import maybe_inject_disclosure
 from pyfastmail_mcp.tools.mail.identities import _find_identity
 from pyfastmail_mcp.tools.mail.reply import _get_email, _quote_body
 
@@ -46,6 +47,8 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             subject = original.get("subject", "")
             if not subject.lower().startswith("fwd:"):
                 subject = f"Fwd: {subject}"
+
+            text_body, _ = maybe_inject_disclosure(text_body, None, to=to)
 
             quoted = _quote_body(original)
             full_body = f"{text_body}\n\n{quoted}".strip() if quoted else text_body

@@ -13,6 +13,7 @@ from pyfastmail_mcp.tools.mail.actions import (
     _build_submission_args,
     _humanize_submission_errors,
 )
+from pyfastmail_mcp.tools.mail.disclosure import maybe_inject_disclosure
 from pyfastmail_mcp.tools.mail.identities import _find_identity
 
 _EMAIL_PROPS = [
@@ -222,6 +223,27 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             if not subject.lower().startswith("re:"):
                 subject = f"Re: {subject}"
 
+            # Compute the reply_all cc set up-front so the disclosure check
+            # sees the full recipient set. The same list is reused below
+            # when populating email_obj["cc"].
+            reply_all_cc: list[str] = []
+            if reply_all:
+                orig_to = original.get("to") or []
+                orig_cc = original.get("cc") or []
+                my_email = identity["email"].lower()
+                reply_all_cc = [
+                    a["email"]
+                    for a in orig_to + orig_cc
+                    if a.get("email") and a["email"].lower() != my_email
+                ]
+
+            text_body, html_body = maybe_inject_disclosure(
+                text_body,
+                html_body,
+                to=[a["email"] for a in to_addrs if a.get("email")],
+                cc=reply_all_cc,
+            )
+
             text_quote = _quote_body(original)
             full_text = f"{text_body}\n\n{text_quote}" if text_quote else text_body
 
@@ -251,17 +273,8 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                 email_obj["inReplyTo"] = [in_reply_to]
             if references:
                 email_obj["references"] = references
-            if reply_all:
-                orig_to = original.get("to") or []
-                orig_cc = original.get("cc") or []
-                my_email = identity["email"].lower()
-                cc_addrs = [
-                    {"email": a["email"]}
-                    for a in orig_to + orig_cc
-                    if a.get("email") and a["email"].lower() != my_email
-                ]
-                if cc_addrs:
-                    email_obj["cc"] = cc_addrs
+            if reply_all_cc:
+                email_obj["cc"] = [{"email": e} for e in reply_all_cc]
 
             rcpts: list[str] = [a["email"] for a in to_addrs if a.get("email")]
             rcpts.extend(

@@ -11,6 +11,7 @@ from pyfastmail_mcp.tools.mail.actions import (
     _build_submission_args,
     _humanize_submission_errors,
 )
+from pyfastmail_mcp.tools.mail.disclosure import maybe_inject_disclosure
 from pyfastmail_mcp.tools.mail.identities import _find_identity
 
 _MAX_RECIPIENTS = 50
@@ -62,6 +63,10 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                 )
             identity = _find_identity(client, identity_id)
             account_id = client.account_id
+
+            text_body, html_body = maybe_inject_disclosure(
+                text_body, html_body, to=to, cc=cc, bcc=bcc
+            )
 
             def _addrs(addrs: list[str]) -> list[dict]:
                 return [{"email": a} for a in addrs]
