@@ -63,10 +63,32 @@ def _inject_text(body: str, disclosure: str) -> str:
     return f"{stripped}\n{disclosure}"
 
 
+def _strip_cdata_wrapper(body: str) -> str:
+    """Strip an XML ``<![CDATA[ … ]]>`` wrapper if present.
+
+    Some LLM-driven callers occasionally wrap an HTML body in CDATA out
+    of XML reflex — but mail clients render the literal ``]]>`` as text
+    because CDATA isn't HTML syntax. Strip the wrapper if both the
+    opening and closing markers are present at the body's extremities.
+
+    Conservative: requires both ``<![CDATA[`` at the start (after any
+    leading whitespace) and ``]]>`` at the end (after any trailing
+    whitespace). If only one is present, the body is left untouched —
+    that's a malformed input the caller should fix, not something to
+    silently massage.
+    """
+    stripped = body.strip()
+    if stripped.startswith("<![CDATA[") and stripped.endswith("]]>"):
+        return stripped[len("<![CDATA["):-len("]]>")]
+    return body
+
+
 def _inject_html(body: str, disclosure_html: str) -> str:
     """Insert the disclosure as the last line of the final ``<p>`` in
     body. Strategy:
 
+    0. Strip any XML ``<![CDATA[ … ]]>`` wrapper from the body — see
+       ``_strip_cdata_wrapper``.
     1. Find the *last* ``</p>`` in body (after stripping any trailing
        whitespace).
     2. If found, insert ``<br><small><em>{disclosure}</em></small>``
@@ -81,6 +103,7 @@ def _inject_html(body: str, disclosure_html: str) -> str:
     typographical register of fine print: smaller, italic, visibly a
     meta-line rather than body content.
     """
+    body = _strip_cdata_wrapper(body)
     stripped = body.rstrip()
     wrap = f"<small><em>{disclosure_html}</em></small>"
     end_idx = stripped.rfind("</p>")
@@ -117,11 +140,20 @@ def maybe_inject_disclosure(
     if html_body is not None:
         disclosure_html_raw = os.environ.get("PYFASTMAIL_DISCLOSURE_HTML", "").strip()
         disclosure_html = disclosure_html_raw or html.escape(disclosure_text)
+        # Strip CDATA wrapper before the idempotency check, so a body
+        # that arrives as ``<![CDATA[<p>…<em>{disclosure}</em>…</p>]]>``
+        # is correctly recognised as already-containing the disclosure.
+        cdata_stripped = _strip_cdata_wrapper(html_body)
         # Idempotency: skip if either the raw HTML disclosure form, or
         # the plain disclosure_text, already appears in the body.
-        if disclosure_text not in html_body and (
-            not disclosure_html_raw or disclosure_html_raw not in html_body
+        if disclosure_text not in cdata_stripped and (
+            not disclosure_html_raw or disclosure_html_raw not in cdata_stripped
         ):
             new_html = _inject_html(html_body, disclosure_html)
+        elif cdata_stripped is not html_body and cdata_stripped != html_body:
+            # Body had a CDATA wrapper but the disclosure was already
+            # inside it — return the unwrapped body anyway so the wire
+            # form is correct HTML.
+            new_html = cdata_stripped
 
     return new_text, new_html

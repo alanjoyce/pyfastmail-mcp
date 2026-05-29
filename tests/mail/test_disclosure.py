@@ -114,6 +114,48 @@ def test_html_fallback_appends_paragraph_when_no_closing_p(disclosure_env):
     )
 
 
+def test_html_strips_cdata_wrapper_before_injecting(disclosure_env):
+    """An html_body wrapped in <![CDATA[ … ]]> (which mail clients render
+    literally because CDATA isn't HTML syntax) gets the wrapper stripped
+    before the disclosure is inserted, so the wire-line message is clean
+    HTML."""
+    body = (
+        "<![CDATA[<p>Greetings.</p>\n"
+        "<p>— Watson</p>\n"
+        "<p>Watson Baxter, House Manager<br>"
+        "2459 Tamalpais St, Mountain View, CA</p>]]>"
+    )
+    _, html = maybe_inject_disclosure(None, body, to=[RECIPIENT])
+    assert "<![CDATA[" not in html
+    assert "]]>" not in html
+    assert html.endswith(
+        f"<br><small><em>{DISCLOSURE_HTML}</em></small></p>"
+    )
+
+
+def test_html_strips_cdata_when_disclosure_already_inside(disclosure_env):
+    """If the body's CDATA wrapper already contains the disclosure
+    (idempotency case), the wrapper is still stripped so the wire form
+    is clean HTML — even though injection itself is a no-op."""
+    body = (
+        f"<![CDATA[<p>Body.</p><p>Watson Baxter"
+        f"<br><small><em>{DISCLOSURE_HTML}</em></small></p>]]>"
+    )
+    _, html = maybe_inject_disclosure(None, body, to=[RECIPIENT])
+    assert "<![CDATA[" not in html
+    assert "]]>" not in html
+    assert html.count(DISCLOSURE_HTML) == 1
+
+
+def test_html_leaves_partial_cdata_alone(disclosure_env):
+    """Only a complete <![CDATA[ … ]]> wrapper triggers stripping. A
+    half-present marker is treated as ordinary content (malformed
+    input is left for the caller to fix, not silently massaged)."""
+    body = "<p>Body with stray ]]> text.</p>"
+    _, html = maybe_inject_disclosure(None, body, to=[RECIPIENT])
+    assert "stray ]]> text" in html
+
+
 def test_html_handles_trailing_whitespace_after_final_p(disclosure_env):
     body = "<p>— Watson</p>\n<p>Watson Baxter</p>   \n  "
     _, html = maybe_inject_disclosure(None, body, to=[RECIPIENT])

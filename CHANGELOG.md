@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.5 (2026-05-28)
+
+### Fixed (Watson carry-patch)
+- `tools/mail/disclosure.py` strips a complete
+  `<![CDATA[ … ]]>` wrapper from `html_body` before injecting the
+  disclosure. CDATA is XML syntax; mail clients render the closing
+  `]]>` as literal text. This guard catches the (occasional) case where
+  an LLM caller wraps its HTML body in CDATA by reflex, so the
+  wire-line message is clean HTML regardless. Only a complete
+  wrapper triggers stripping — a half-present marker is left alone
+  (malformed input belongs to the caller). 17 disclosure tests, 396 in
+  the full suite.
+
 ## 0.3.4 (2026-05-28)
 
 ### Changed (Watson carry-patch)
