@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.4 (2026-05-28)
+
+### Changed (Watson carry-patch)
+- `tools/mail/disclosure.py` — two changes:
+  - **Placement.** Disclosure now sits inside the caller's signature
+    block, not below it as a separate paragraph:
+    - **Text:** attaches as a single new line under the body's last
+      printed line (after rstrip), so it sits directly under the
+      address line with no blank-line gap.
+    - **HTML:** inserted before the **final** `</p>` in html_body,
+      wrapped in `<br><small><em>…</em></small>`. Renders as a small
+      italicised last line of the caller's signature paragraph —
+      typographically registered as fine-print, not body content.
+    - **Fallback** (no `</p>` in html_body): appended as a new
+      `<p><small><em>…</em></small></p>` paragraph at the end, so the
+      disclosure is still present for non-paragraph HTML.
+  - **No more recipient classification.** The previous gating —
+    "skip when every recipient is in `PYFASTMAIL_RESIDENT_ADDRESSES`"
+    — is removed. The disclosure fires on every outbound when the env
+    vars are set. Rationale: a consistent footer across the full mail
+    trail (briefings, resident replies, vendor outreach) keeps the
+    agent's identity unambiguous in every inbox. The
+    `PYFASTMAIL_RESIDENT_ADDRESSES` env var is no longer read; the
+    recipient args to `maybe_inject_disclosure` are accepted for
+    backward-compatibility but not inspected.
+
+  Test suite updated to reflect both changes; 14 tests for the
+  disclosure module, 393 in the full suite.
+
 ## 0.3.3 (2026-05-28)
 
 ### Added (Watson carry-patch)
