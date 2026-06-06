@@ -41,20 +41,21 @@ def test_no_disclosure_when_feature_unconfigured(monkeypatch):
 def test_disclosure_fires_for_any_outbound(disclosure_env):
     """The disclosure attaches regardless of recipient — no resident
     classification. The household-internal mailbox carries the same
-    footer as an outbound to a vendor."""
+    footer as an outbound to a vendor. (Body has no signature here, so the
+    disclosure lands on its own separated line/paragraph.)"""
     text, html = maybe_inject_disclosure(
         "Body.", "<p>Body.</p>", to=[RESIDENT]
     )
-    assert text == f"Body.\n{DISCLOSURE_TEXT}"
-    assert html == f"<p>Body.<br><small><em>{DISCLOSURE_HTML}</em></small></p>"
+    assert text == f"Body.\n\n{DISCLOSURE_TEXT}"
+    assert html == f"<p>Body.</p>\n<p><small><em>{DISCLOSURE_HTML}</em></small></p>"
 
 
 def test_disclosure_fires_with_no_recipient_args(disclosure_env):
     """Recipient args are optional — callers that don't pass them still
     get the disclosure (the feature is gated by env, not by recipients)."""
     text, html = maybe_inject_disclosure("Body.", "<p>Body.</p>")
-    assert text == f"Body.\n{DISCLOSURE_TEXT}"
-    assert html == f"<p>Body.<br><small><em>{DISCLOSURE_HTML}</em></small></p>"
+    assert text == f"Body.\n\n{DISCLOSURE_TEXT}"
+    assert html == f"<p>Body.</p>\n<p><small><em>{DISCLOSURE_HTML}</em></small></p>"
 
 
 def test_text_attached_tight_under_final_line(disclosure_env):
@@ -75,13 +76,33 @@ def test_text_attached_tight_under_final_line(disclosure_env):
     assert text.startswith("Greetings.\n\n— Watson\n\nWatson Baxter")
 
 
+def test_text_separated_when_no_signature(disclosure_env):
+    """A body that ends on a bare sentence (no signature block) gets a blank
+    line between it and the disclosure, so the footer reads as fine print
+    rather than a run-on of the last line."""
+    body = "Done — I've let Jonathan know you're back."
+    text, _ = maybe_inject_disclosure(body, None, to=[RECIPIENT])
+    assert text == f"{body}\n\n{DISCLOSURE_TEXT}"
+
+
+def test_html_separated_when_no_signature(disclosure_env):
+    """An HTML body with no signature block gets the disclosure as its own
+    standalone paragraph, not jammed inside the final content <p>."""
+    body = "<p>Done — I've let Jonathan know you're back.</p>"
+    _, html = maybe_inject_disclosure(None, body, to=[RECIPIENT])
+    assert html == (
+        f"{body}\n<p><small><em>{DISCLOSURE_HTML}</em></small></p>"
+    )
+
+
 def test_text_rstrips_trailing_whitespace_before_attaching(disclosure_env):
-    """Whether the body ends with no newline, one, or several, the
-    disclosure sits one line below the last printed line."""
+    """Whether the body ends with no newline, one, or several, trailing
+    whitespace is stripped before the disclosure is attached. (No signature
+    here, so the disclosure is separated by a blank line.)"""
     for ending in ("", "\n", "\n\n", "\n\n\n  \t"):
         body = f"Final line.{ending}"
         text, _ = maybe_inject_disclosure(body, None, to=[RECIPIENT])
-        assert text == f"Final line.\n{DISCLOSURE_TEXT}"
+        assert text == f"Final line.\n\n{DISCLOSURE_TEXT}"
 
 
 def test_html_inserted_inside_final_paragraph(disclosure_env):
@@ -205,10 +226,10 @@ def test_html_fallback_uses_escaped_text_when_html_var_unset(
 def test_text_none_html_only(disclosure_env):
     text, html = maybe_inject_disclosure(None, "<p>Body.</p>", to=[RECIPIENT])
     assert text is None
-    assert html == f"<p>Body.<br><small><em>{DISCLOSURE_HTML}</em></small></p>"
+    assert html == f"<p>Body.</p>\n<p><small><em>{DISCLOSURE_HTML}</em></small></p>"
 
 
 def test_html_none_text_only(disclosure_env):
     text, html = maybe_inject_disclosure("Body.", None, to=[RECIPIENT])
-    assert text == f"Body.\n{DISCLOSURE_TEXT}"
+    assert text == f"Body.\n\n{DISCLOSURE_TEXT}"
     assert html is None

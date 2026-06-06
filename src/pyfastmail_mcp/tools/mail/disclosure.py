@@ -9,21 +9,23 @@ The injection is **opt-in via environment variables** so the upstream
 pyfastmail-mcp tools stay general-purpose. Without ``PYFASTMAIL_DISCLOSURE_TEXT``
 set, every call is a no-op.
 
+Placement adapts to whether the body ends with the caller's signature
+block (detected via ``_ends_with_signature``):
+
+  * **With a signature** — the disclosure attaches tightly, as the final
+    line of the signature block (single ``\\n`` in text; inserted before
+    the last ``</p>`` as ``<br><small><em>…</em></small>`` in HTML). This is
+    the desired "fine print directly under the address line" layout.
+  * **Without a signature** — e.g. a terse one-line relay that skipped the
+    block — the disclosure is separated onto its own line (blank line in
+    text; a standalone ``<p><small><em>…</em></small></p>`` in HTML), so it
+    doesn't read as a run-on continuation of the last body sentence.
+
 Configuration:
     PYFASTMAIL_DISCLOSURE_TEXT      The disclosure line for plain-text
-                                    bodies. Attached as a single new line
-                                    immediately under the body's final
-                                    line — designed to sit inside the
-                                    caller's signature block, directly
-                                    below the address line, with no blank
-                                    line separator.
+                                    bodies.
     PYFASTMAIL_DISCLOSURE_HTML      The disclosure line for HTML bodies.
-                                    Inserted inside the **final** ``<p>``
-                                    of html_body (before its ``</p>``)
-                                    wrapped in ``<br><small><em>…</em></small>``
-                                    so it renders as a small italicised
-                                    last line of the caller's signature
-                                    paragraph. If unset, falls back to
+                                    If unset, falls back to
                                     PYFASTMAIL_DISCLOSURE_TEXT (escaped).
 
 The injection fires for **every** outbound — there is no recipient
@@ -39,28 +41,55 @@ the injection is skipped — so a caller that composes the disclosure in
 prose (during a transitional period, in a proposal email's quoted draft,
 or in error) doesn't get a doubled footer.
 
-Fallback for HTML bodies with no ``<p>`` element: the disclosure is
-appended as a new ``<p><small><em>…</em></small></p>`` paragraph at the
-end of html_body. This keeps the footer present even if the caller's
-HTML doesn't use the conventional paragraph structure.
+HTML bodies with no ``<p>`` element are treated as having no signature
+scaffold: the disclosure is appended as a standalone
+``<p><small><em>…</em></small></p>`` paragraph, keeping the footer present
+and separated even when the caller's HTML doesn't use paragraph structure.
 """
 
 from __future__ import annotations
 
 import html
 import os
+import re
 from typing import Iterable
+
+# Distinctive sign-off markers from Watson's House Manager signature block
+# (see identity.md "Sign-off"). These don't appear in ordinary body prose —
+# the identity rules ban Watson from naming himself in the body — so a match
+# in the body's tail reliably means the signature scaffold is present, and the
+# disclosure can attach tightly under it. Lower-cased for case-insensitive
+# comparison.
+_SIG_MARKERS = ("watson baxter", "house manager", "— watson", "—watson", "- watson")
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _ends_with_signature(body: str) -> bool:
+    """Return True if the body's tail looks like Watson's sign-off block.
+
+    Scans the last stretch of the tag-stripped body for the distinctive
+    sign-off markers in ``_SIG_MARKERS``. When present, the disclosure attaches
+    tightly to the signature (the desired "fine print under the address line"
+    layout). When absent — e.g. a terse one-line relay that skipped the block —
+    the caller separates the disclosure onto its own line/paragraph instead, so
+    it doesn't read as a run-on continuation of the last body sentence.
+    """
+    tail = _TAG_RE.sub(" ", body)[-400:].lower()
+    return any(marker in tail for marker in _SIG_MARKERS)
 
 
 def _inject_text(body: str, disclosure: str) -> str:
-    """Attach the disclosure as a single new line directly under the
-    body's final line. Strips any trailing whitespace from the body
-    first, then adds ``\\n{disclosure}`` — producing a single line break
-    between the body's last printed line and the disclosure. This is the
-    canonical signature-block layout: address line, then disclosure
-    line, no blank line between them."""
+    """Attach the disclosure under the body's final printed line.
+
+    When the body ends with the signature block, the disclosure sits tight
+    against it (single ``\\n``) — the canonical layout: address line, then
+    disclosure line, no blank line between them. When there's no signature, a
+    blank line separates the disclosure from the body so it reads as fine print
+    rather than a continuation of the last sentence."""
     stripped = body.rstrip()
-    return f"{stripped}\n{disclosure}"
+    sep = "\n" if _ends_with_signature(stripped) else "\n\n"
+    return f"{stripped}{sep}{disclosure}"
 
 
 def _strip_cdata_wrapper(body: str) -> str:
@@ -84,20 +113,21 @@ def _strip_cdata_wrapper(body: str) -> str:
 
 
 def _inject_html(body: str, disclosure_html: str) -> str:
-    """Insert the disclosure as the last line of the final ``<p>`` in
-    body. Strategy:
+    """Insert the disclosure into an HTML body. Strategy:
 
     0. Strip any XML ``<![CDATA[ … ]]>`` wrapper from the body — see
        ``_strip_cdata_wrapper``.
-    1. Find the *last* ``</p>`` in body (after stripping any trailing
-       whitespace).
-    2. If found, insert ``<br><small><em>{disclosure}</em></small>``
-       immediately before that ``</p>`` — the disclosure becomes the
-       final line of whatever paragraph that is, typically the signature
-       block.
-    3. If no ``</p>`` is found, fall back to appending a new
-       ``<p><small><em>{disclosure}</em></small></p>`` paragraph at the
-       end of body.
+    1. If the body ends with the signature block (``_ends_with_signature``)
+       *and* has a final ``</p>``, insert
+       ``<br><small><em>{disclosure}</em></small>`` immediately before that
+       ``</p>`` — the disclosure becomes the tight final line of the
+       signature paragraph (the desired "fine print under the address line"
+       layout).
+    2. Otherwise — no signature scaffold (e.g. a terse one-line reply that
+       skipped the block) — append a separate
+       ``<p><small><em>{disclosure}</em></small></p>`` paragraph at the end,
+       so the disclosure reads as fine print on its own line rather than a
+       run-on continuation of the last body sentence.
 
     The ``<small>`` and ``<em>`` wrappers give the disclosure the
     typographical register of fine print: smaller, italic, visibly a
@@ -107,9 +137,9 @@ def _inject_html(body: str, disclosure_html: str) -> str:
     stripped = body.rstrip()
     wrap = f"<small><em>{disclosure_html}</em></small>"
     end_idx = stripped.rfind("</p>")
-    if end_idx == -1:
-        return f"{stripped}\n<p>{wrap}</p>"
-    return f"{stripped[:end_idx]}<br>{wrap}{stripped[end_idx:]}"
+    if end_idx != -1 and _ends_with_signature(stripped):
+        return f"{stripped[:end_idx]}<br>{wrap}{stripped[end_idx:]}"
+    return f"{stripped}\n<p>{wrap}</p>"
 
 
 def maybe_inject_disclosure(

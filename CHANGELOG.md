@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.3.5 (2026-05-28)
+## 0.3.6 (2026-06-06)
+
+### Changed (Watson carry-patch)
+- `tools/mail/disclosure.py` — disclosure placement now adapts to whether
+  the body ends with the caller's signature block. When a signature is
+  present (detected via the distinctive sign-off markers in
+  `_ends_with_signature` — "Watson Baxter", "House Manager", "— Watson"),
+  the disclosure attaches tight as the block's final line, unchanged from
+  before. When there's **no** signature — e.g. a terse one-line reply that
+  skipped the block — the disclosure now lands on its own separated line
+  (blank line in text; a standalone `<p><small><em>…</em></small></p>` in
+  HTML) instead of being jammed onto the last body sentence, where it read
+  as an awkward run-on. Tests updated to cover both branches; 19 disclosure
+  tests, 398 in the full suite.
 
 ### Fixed (Watson carry-patch)
 - `tools/mail/disclosure.py` strips a complete
