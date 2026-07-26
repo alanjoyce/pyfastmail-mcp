@@ -7,7 +7,7 @@ import pytest
 import requests
 from mcp.server.fastmcp import FastMCP
 
-from pyfastmail_mcp.tools.mail.email import _extract_body, register
+from pyfastmail_mcp.tools.mail.email import _body_is_html, _extract_body, register
 
 
 @pytest.fixture
@@ -196,6 +196,75 @@ async def test_get_email_headers_appended_to_default_props(mock_client):
     # default props still present
     assert "subject" in call_kwargs["properties"]
     assert "header:X-Delivered-To" in call_kwargs["properties"]
+
+
+# --- quoted-reply trimming (Watson carry-patch) ---------------------------
+
+QUOTED = "Tuesday works.\n\n> Can you make Tuesday?\n"
+
+REPLY_EMAIL = {
+    **EMAIL,
+    "bodyValues": {
+        "1": {"value": QUOTED},
+        "2": {"value": "<p>Tuesday works.</p><blockquote>Can you?</blockquote>"},
+    },
+}
+
+
+async def test_get_email_strips_quoted_text_by_default(mock_client):
+    mock_client.call.return_value = [["Email/get", {"list": [REPLY_EMAIL]}, "g"]]
+    result = json.loads(await _tool(mock_client)(email_id="e1"))
+    assert result["body"] == "Tuesday works."
+    assert result["quotedTextStripped"] is True
+
+
+async def test_get_email_include_quoted_text_returns_raw_body(mock_client):
+    mock_client.call.return_value = [["Email/get", {"list": [REPLY_EMAIL]}, "g"]]
+    result = json.loads(
+        await _tool(mock_client)(email_id="e1", include_quoted_text=True)
+    )
+    assert result["body"] == QUOTED
+    assert result["quotedTextStripped"] is False
+
+
+async def test_get_email_html_body_is_never_trimmed(mock_client):
+    """Text delimiters don't apply to HTML, which quotes with <blockquote>."""
+    mock_client.call.return_value = [["Email/get", {"list": [REPLY_EMAIL]}, "g"]]
+    result = json.loads(await _tool(mock_client)(email_id="e1", prefer_html=True))
+    assert result["body"] == REPLY_EMAIL["bodyValues"]["2"]["value"]
+    assert result["quotedTextStripped"] is False
+
+
+async def test_get_email_html_fallback_to_text_is_trimmed(mock_client):
+    """prefer_html with no HTML part falls back to text, which is trimmable."""
+    email = {**REPLY_EMAIL, "htmlBody": []}
+    mock_client.call.return_value = [["Email/get", {"list": [email]}, "g"]]
+    result = json.loads(await _tool(mock_client)(email_id="e1", prefer_html=True))
+    assert result["body"] == "Tuesday works."
+    assert result["quotedTextStripped"] is True
+
+
+async def test_get_email_unquoted_body_reports_not_stripped(mock_client):
+    mock_client.call.return_value = [["Email/get", {"list": [EMAIL]}, "g"]]
+    result = json.loads(await _tool(mock_client)(email_id="e1"))
+    assert result["body"] == "plain text"
+    assert result["quotedTextStripped"] is False
+
+
+async def test_get_email_missing_body_does_not_crash(mock_client):
+    email = {**EMAIL, "textBody": [], "htmlBody": [], "bodyValues": {}}
+    mock_client.call.return_value = [["Email/get", {"list": [email]}, "g"]]
+    result = json.loads(await _tool(mock_client)(email_id="e1"))
+    assert result["body"] is None
+    assert result["quotedTextStripped"] is False
+
+
+def test_body_is_html_matches_extract_body_selection():
+    assert _body_is_html(EMAIL, prefer_html=True) is True
+    assert _body_is_html(EMAIL, prefer_html=False) is False
+    # prefer_html but no resolvable HTML part → _extract_body falls back to text
+    assert _body_is_html({**EMAIL, "htmlBody": []}, prefer_html=True) is False
+    assert _body_is_html({**EMAIL, "bodyValues": {}}, prefer_html=True) is False
 
 
 def test_get_email_docstring_mentions_export_for_all_headers():

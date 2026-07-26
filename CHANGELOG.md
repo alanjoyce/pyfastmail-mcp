@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.7 (2026-07-26)
+
+### Added (Watson carry-patch)
+- `tools/mail/quoting.py` — `mail_get_email` now trims the quoted reply
+  chain from plain-text bodies by default, returning only the message's
+  new content. Pass `include_quoted_text=True` for the raw body; the
+  response carries `quotedTextStripped` so a caller can tell whether
+  anything was removed and re-fetch if it needs the original. Idea taken
+  from Fastmail's official MCP `read_email`, which does the same; the
+  delimiters are ported from Watson's own `stripQuotedReply()`
+  (`src/lib/email-formatter.ts`) so the MCP read path and Watson's
+  inbound-email pipeline agree on where new content ends. Keep the two in
+  sync if either changes.
+
+  Deliberately conservative in three ways. Delimiters are checked in
+  order rather than by earliest position, so the strong
+  "On &lt;date&gt; … wrote:" attribution wins over the weak leading-"&gt;"
+  heuristic — a "&gt;" quoted inline above the attribution line is part of
+  the sender's new text and must not truncate it. HTML bodies are never
+  trimmed, since the delimiters are text heuristics and HTML clients quote
+  with `<blockquote>` (`_body_is_html` mirrors `_extract_body`'s selection
+  rule, including its fallback to text when `prefer_html` finds no HTML
+  part — that fallback *is* trimmed). And a body that trims to nothing is
+  returned whole: a bare quote carries more than an empty string. This
+  last case is where the Python and TypeScript versions differ in route
+  though not in output — the TS patterns require a leading newline and so
+  simply don't match a body that opens on a quote, while these anchor at
+  string start and fall through the empty-result guard. 8 quoting tests,
+  6 new `mail_get_email` tests, 413 in the full suite.
+
 ## 0.3.6 (2026-06-06)
 
 ### Changed (Watson carry-patch)

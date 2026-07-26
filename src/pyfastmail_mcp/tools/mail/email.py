@@ -8,6 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from pyfastmail_mcp.client import JMAPClient
 from pyfastmail_mcp.exceptions import FastmailError
+from pyfastmail_mcp.tools.mail.quoting import strip_quoted_reply
 
 _EMAIL_PROPS = [
     "id",
@@ -109,8 +110,16 @@ def register(server: FastMCP, client: JMAPClient) -> None:
         email_id: str,
         prefer_html: bool = False,
         headers: list[str] | None = None,
+        include_quoted_text: bool = False,
     ) -> str:
         """Get a single email by ID with full body content and attachment metadata.
+
+        By default the quoted reply chain is trimmed from a plain-text body, so
+        you see only this message's new content; `quotedTextStripped` in the
+        response tells you whether anything was removed. Pass
+        include_quoted_text to get the raw body with the quoted original
+        intact, or use mail_get_email_thread to read the prior messages
+        properly rather than as quoted copies.
 
         Optionally fetch specific headers by name. JMAP requires headers to be
         requested by name — no wildcard fetch is supported. Use mail_export_email
@@ -125,6 +134,9 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             email_id: The JMAP email ID.
             prefer_html: Return HTML body if available; defaults to plain text.
             headers: Optional list of header names to fetch (e.g. ["X-Delivered-To"]).
+            include_quoted_text: Return the raw body including the quoted reply
+                chain. Defaults to False. Ignored for HTML bodies, which are
+                never trimmed.
         """
         try:
             account_id = client.account_id
@@ -153,6 +165,15 @@ def register(server: FastMCP, client: JMAPClient) -> None:
 
             email = emails[0]
             body = _extract_body(email, prefer_html)
+            # Only plain text is trimmable — the delimiters below are text
+            # heuristics, and HTML clients quote with <blockquote> instead.
+            quoted_stripped = False
+            if (
+                body
+                and not include_quoted_text
+                and not _body_is_html(email, prefer_html)
+            ):
+                body, quoted_stripped = strip_quoted_reply(body)
             attachments = [
                 {"name": a.get("name"), "type": a.get("type"), "size": a.get("size")}
                 for a in (email.get("attachments") or [])
@@ -166,6 +187,7 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                 "receivedAt": email.get("receivedAt"),
                 "keywords": email.get("keywords", {}),
                 "body": body,
+                "quotedTextStripped": quoted_stripped,
                 "hasAttachment": email.get("hasAttachment"),
                 "attachments": attachments,
             }
@@ -174,6 +196,22 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             return json.dumps(result, indent=2)
         except (FastmailError, requests.RequestException, ValueError) as exc:
             return json.dumps({"error": str(exc)})
+
+
+def _body_is_html(email: dict, prefer_html: bool) -> bool:
+    """Whether _extract_body would have returned an HTML part.
+
+    Mirrors _extract_body's selection rule, including its fallback to
+    textBody when prefer_html is set but no HTML part resolves.
+    """
+    if not prefer_html:
+        return False
+    body_values = email.get("bodyValues") or {}
+    return any(
+        part.get("partId") in body_values
+        for part in (email.get("htmlBody") or [])
+        if part.get("partId")
+    )
 
 
 def _extract_body(email: dict, prefer_html: bool) -> str | None:
