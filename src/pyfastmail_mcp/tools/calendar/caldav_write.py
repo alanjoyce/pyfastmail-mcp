@@ -1,9 +1,11 @@
 """CalDAV write tools — create, update, delete events."""
 
 import json
+import os
 import uuid
 from datetime import date, datetime
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import icalendar
 import requests
@@ -11,6 +13,26 @@ from mcp.server.fastmcp import FastMCP
 
 from pyfastmail_mcp.dav_client import CALDAV_BASE, DAVClient
 from pyfastmail_mcp.exceptions import FastmailError
+
+
+# Watson carry-patch: naive ISO datetimes used to be written as *floating*
+# times (DTSTART with no TZID and no Z). RFC 5545 says a floating time is
+# interpreted in the viewer's local zone, but Fastmail/Google — and any
+# consumer that expands the calendar server-side — read it as UTC, so an event
+# created as "2026-08-03T14:00:00" surfaced at 07:00 Pacific. A 7-hour error,
+# silent, on every write that didn't spell out an offset.
+#
+# Anchor naive input to a real zone instead. Callers that DO pass an offset
+# ("...T14:00:00-07:00") are already unambiguous and pass through untouched.
+_DEFAULT_TZ = ZoneInfo(os.environ.get("PYFASTMAIL_DEFAULT_TZ", "America/Los_Angeles"))
+
+
+def _parse_dt(value: str) -> datetime:
+    """Parse an ISO datetime, localising naive input to the default zone."""
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_DEFAULT_TZ)
+    return dt
 
 
 def _build_vevent(
@@ -34,8 +56,8 @@ def _build_vevent(
         event.add("dtstart", date.fromisoformat(start[:10]))
         event.add("dtend", date.fromisoformat(end[:10]))
     else:
-        event.add("dtstart", datetime.fromisoformat(start))
-        event.add("dtend", datetime.fromisoformat(end))
+        event.add("dtstart", _parse_dt(start))
+        event.add("dtend", _parse_dt(end))
 
     if location:
         event.add("location", location)
@@ -126,11 +148,9 @@ def register(server: FastMCP, dav_client: DAVClient) -> None:
                 if title is not None:
                     event["SUMMARY"] = icalendar.vText(title)
                 if start is not None:
-                    event["DTSTART"] = icalendar.vDatetime(
-                        datetime.fromisoformat(start)
-                    )
+                    event["DTSTART"] = icalendar.vDatetime(_parse_dt(start))
                 if end is not None:
-                    event["DTEND"] = icalendar.vDatetime(datetime.fromisoformat(end))
+                    event["DTEND"] = icalendar.vDatetime(_parse_dt(end))
                 if location is not None:
                     event["LOCATION"] = icalendar.vText(location)
                 if description is not None:
