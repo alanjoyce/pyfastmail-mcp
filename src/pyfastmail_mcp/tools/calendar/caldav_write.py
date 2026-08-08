@@ -15,24 +15,40 @@ from pyfastmail_mcp.dav_client import CALDAV_BASE, DAVClient
 from pyfastmail_mcp.exceptions import FastmailError
 
 
-# Watson carry-patch: naive ISO datetimes used to be written as *floating*
-# times (DTSTART with no TZID and no Z). RFC 5545 says a floating time is
-# interpreted in the viewer's local zone, but Fastmail/Google — and any
-# consumer that expands the calendar server-side — read it as UTC, so an event
-# created as "2026-08-03T14:00:00" surfaced at 07:00 Pacific. A 7-hour error,
-# silent, on every write that didn't spell out an offset.
+# Watson carry-patch: every event datetime is written anchored to a real IANA
+# zone, whatever shape the caller passed it in.
 #
-# Anchor naive input to a real zone instead. Callers that DO pass an offset
-# ("...T14:00:00-07:00") are already unambiguous and pass through untouched.
+# Two ways this used to go wrong, both silent, both 7 hours:
+#
+#   Naive ("2026-08-03T14:00:00") was written as a *floating* time — DTSTART
+#   with no TZID and no Z. RFC 5545 says a floating time is read in the
+#   viewer's local zone, but Fastmail/Google — and anything that expands the
+#   calendar server-side — read it as UTC, so the event surfaced at 07:00
+#   Pacific.
+#
+#   Offset-aware ("2026-08-03T14:00:00-07:00") looked like the safe form and
+#   was passed through untouched. It isn't: fromisoformat yields a fixed-offset
+#   timezone, not a ZoneInfo, and icalendar renders that as TZID="UTC-07:00"
+#   with no VTIMEZONE to define it. Clients that fall back to local time show
+#   the right hour by luck; ones that fall back to UTC are 7 hours out, and
+#   Fastmail's JMAP layer drops the event from its index entirely.
+#
+# So: normalise both to _DEFAULT_TZ. The instant is preserved either way, and
+# icalendar can emit a named zone with a VTIMEZONE to match. Callers should not
+# have to reason about any of this — a plain local wall-clock string is correct.
 _DEFAULT_TZ = ZoneInfo(os.environ.get("PYFASTMAIL_DEFAULT_TZ", "America/Los_Angeles"))
 
 
 def _parse_dt(value: str) -> datetime:
-    """Parse an ISO datetime, localising naive input to the default zone."""
+    """Parse an ISO datetime and anchor it to the default IANA zone.
+
+    Naive input is interpreted as a wall-clock time already in that zone.
+    Offset-aware input keeps its instant and is converted into that zone.
+    """
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_DEFAULT_TZ)
-    return dt
+        return dt.replace(tzinfo=_DEFAULT_TZ)
+    return dt.astimezone(_DEFAULT_TZ)
 
 
 def _build_vevent(

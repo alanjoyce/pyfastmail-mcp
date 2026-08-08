@@ -235,3 +235,59 @@ async def test_delete_event_returns_error_on_exception():
 
     assert "error" in result
     assert "forbidden" in result["error"]
+
+
+# --- timezone anchoring (Watson carry-patch) ---
+#
+# Every accepted input shape must land on a named IANA zone. A fixed-offset
+# TZID like "UTC-07:00" has no VTIMEZONE to define it: clients that fall back
+# to local time show the right hour by luck, ones that fall back to UTC are
+# 7 hours out, and Fastmail's JMAP layer drops the event from its index.
+
+
+async def _created_ical(start: str, end: str) -> str:
+    client = _client()
+    client.put.return_value = _mock_response()
+    fn = _tool(client, "calendar_create_event")
+    await fn(calendar_href=_CAL_HREF, title="Delivery", start=start, end=end)
+    return client.put.call_args[0][1]
+
+
+async def test_create_event_offset_aware_uses_named_zone():
+    ical = await _created_ical("2026-08-08T14:00:00-07:00", "2026-08-08T18:00:00-07:00")
+
+    assert "DTSTART;TZID=America/Los_Angeles:20260808T140000" in ical
+    assert "DTEND;TZID=America/Los_Angeles:20260808T180000" in ical
+    assert 'TZID="' not in ical
+
+
+async def test_create_event_naive_is_read_as_local_wall_clock():
+    ical = await _created_ical("2026-08-08T14:00:00", "2026-08-08T18:00:00")
+
+    assert "DTSTART;TZID=America/Los_Angeles:20260808T140000" in ical
+    assert "DTEND;TZID=America/Los_Angeles:20260808T180000" in ical
+
+
+async def test_create_event_utc_input_converts_to_named_zone():
+    ical = await _created_ical("2026-08-08T21:00:00Z", "2026-08-09T01:00:00Z")
+
+    # Same instant as 2pm-6pm Pacific, expressed in the named zone.
+    assert "DTSTART;TZID=America/Los_Angeles:20260808T140000" in ical
+    assert "DTEND;TZID=America/Los_Angeles:20260808T180000" in ical
+
+
+async def test_update_event_offset_aware_uses_named_zone():
+    client = _client()
+    client.get.return_value = _mock_response(_ICAL_EVENT, {"ETag": '"e1"'})
+    client.put.return_value = _mock_response()
+    fn = _tool(client, "calendar_update_event")
+
+    await fn(
+        href=_EVENT_HREF,
+        start="2026-08-08T14:00:00-07:00",
+        end="2026-08-08T18:00:00-07:00",
+    )
+
+    ical = client.put.call_args[0][1]
+    assert "DTSTART;TZID=America/Los_Angeles:20260808T140000" in ical
+    assert 'TZID="' not in ical

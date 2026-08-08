@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.9 (2026-08-08)
+
+### Fixed (Watson carry-patch)
+- `tools/calendar/caldav_write.py` — offset-aware event datetimes are now
+  converted into the default IANA zone instead of being passed through
+  untouched. `datetime.fromisoformat("2026-08-08T14:00:00-07:00")` yields a
+  fixed-offset `timezone`, not a `ZoneInfo`, and `icalendar` renders that as
+  `DTSTART;TZID="UTC-07:00":20260808T140000` — a TZID with no `VTIMEZONE` to
+  define it, and not an IANA zone name. How a consumer reads it is then a
+  matter of which fallback it picks: ones that fall back to local time show the
+  right hour by luck, ones that fall back to UTC are 7 hours out. Both
+  behaviours were observed against the same event — a Pacific-local client
+  rendered it correctly while Fastmail's server-side `<C:expand>` returned
+  14:00 UTC. 0.3.8 fixed the naive-input half of this and left
+  the offset-aware half broken, which made an explicit offset — the form that
+  *looks* safest, and that callers were being told to prefer — the one that
+  failed. All three input shapes (naive, offset-aware, `Z`) now emit
+  `TZID=America/Los_Angeles` for the same instant. Covered by regression tests
+  in `tests/calendar/test_caldav_write.py`.
+
+## 0.3.8 (2026-08-05)
+
+### Fixed (Watson carry-patch)
+- `tools/calendar/caldav_write.py` — naive ISO datetimes are anchored to
+  `America/Los_Angeles` (override with `PYFASTMAIL_DEFAULT_TZ`) rather than
+  written as RFC 5545 *floating* times. Fastmail and Google expand a floating
+  time as UTC, so events created as `2026-08-03T14:00:00` surfaced at 07:00
+  Pacific. (Version bump not recorded at the time; logged here retroactively.)
+
 ## 0.3.7 (2026-07-26)
 
 ### Added (Watson carry-patch)
