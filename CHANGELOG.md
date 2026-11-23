@@ -8,10 +8,10 @@
   to the original's `From`, which for a follow-up on our own sent message is
   ourselves: the reply landed in our own inbox, reached nobody else, and the
   tool reported it sent. With `reply_all` the original's recipients were at
-  least copied, which hid it. Found in Watson's sent folder: thirteen
-  follow-ups since April addressed to himself, six of them with no copy to
+  least copied, which hid it. Found in Watson's sent folder: fourteen
+  follow-ups since April addressed to himself, seven of them with no copy to
   anyone (a retraction to a painter, three chases and a stand-down to a friend,
-  one to a pest-control branch). A message whose `From` is our own identity and
+  a chase to a pest-control firm, a cart confirmation). A message whose `From` is our own identity and
   which has other recipients is now a follow-up: `To` is the original's `To`,
   and `reply_all` adds the original's `Cc`. A note to self still goes to self.
   Covered by regression tests in `tests/mail/test_reply.py`.
