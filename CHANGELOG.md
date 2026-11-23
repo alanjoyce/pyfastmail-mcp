@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.10 (2026-11-22)
+
+### Fixed (Watson carry-patch)
+- `tools/mail/reply.py` — a reply to a message we sent ourselves now goes to
+  the people the original went to. `mail_reply_to_email` addressed every reply
+  to the original's `From`, which for a follow-up on our own sent message is
+  ourselves: the reply landed in our own inbox, reached nobody else, and the
+  tool reported it sent. With `reply_all` the original's recipients were at
+  least copied, which hid it. Found in Watson's sent folder: thirteen
+  follow-ups since April addressed to himself, six of them with no copy to
+  anyone (a retraction to a painter, three chases and a stand-down to a friend,
+  one to a pest-control branch). A message whose `From` is our own identity and
+  which has other recipients is now a follow-up: `To` is the original's `To`,
+  and `reply_all` adds the original's `Cc`. A note to self still goes to self.
+  Covered by regression tests in `tests/mail/test_reply.py`.
+
 ## 0.3.9 (2026-08-08)
 
 ### Fixed (Watson carry-patch)

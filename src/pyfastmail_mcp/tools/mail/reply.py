@@ -216,7 +216,24 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             in_reply_to = orig_msg_ids[0] if orig_msg_ids else None
             references = orig_refs + orig_msg_ids
 
-            reply_to_addrs = original.get("replyTo") or original.get("from") or []
+            # A reply to a message we sent ourselves is a follow-up, and it
+            # goes to the people the original went to, as it does in every
+            # mail client. Addressing it to the original's From sends it to
+            # ourselves: a chase or a retraction on our own thread then reaches
+            # nobody, while the tool reports it sent.
+            my_email = identity["email"].lower()
+            orig_from = original.get("from") or []
+            orig_to = original.get("to") or []
+            follow_up_to = [
+                a for a in orig_to if a.get("email") and a["email"].lower() != my_email
+            ]
+            own_message = bool(follow_up_to) and bool(orig_from) and all(
+                (a.get("email") or "").lower() == my_email for a in orig_from
+            )
+            if own_message:
+                reply_to_addrs = follow_up_to
+            else:
+                reply_to_addrs = original.get("replyTo") or orig_from
             to_addrs = [{"email": a["email"]} for a in reply_to_addrs if a.get("email")]
 
             subject = original.get("subject", "")
@@ -228,13 +245,15 @@ def register(server: FastMCP, client: JMAPClient) -> None:
             # when populating email_obj["cc"].
             reply_all_cc: list[str] = []
             if reply_all:
-                orig_to = original.get("to") or []
                 orig_cc = original.get("cc") or []
-                my_email = identity["email"].lower()
+                # On a follow-up the original's To is already this reply's To.
+                already_to = {a["email"].lower() for a in to_addrs}
                 reply_all_cc = [
                     a["email"]
-                    for a in orig_to + orig_cc
-                    if a.get("email") and a["email"].lower() != my_email
+                    for a in ([] if own_message else orig_to) + orig_cc
+                    if a.get("email")
+                    and a["email"].lower() != my_email
+                    and (not own_message or a["email"].lower() not in already_to)
                 ]
 
             text_body, html_body = maybe_inject_disclosure(

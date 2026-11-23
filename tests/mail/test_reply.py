@@ -266,6 +266,59 @@ async def test_reply_all_adds_cc():
     assert "alice@example.com" not in cc_emails
 
 
+def _own_sent(**over):
+    """A message we sent ourselves: the thing a chase or a retraction replies to."""
+    return {
+        **_ORIGINAL_EMAIL,
+        "from": [{"email": "alice@example.com", "name": "Alice"}],
+        "to": [{"email": "bob@example.com"}],
+        "cc": [{"email": "carol@example.com"}],
+        **over,
+    }
+
+
+async def _reply_draft(email, **kwargs):
+    client = mock_client()
+    client.call.side_effect = [
+        _email_get_response(email),
+        _identity_response(),
+        _send_response(),
+    ]
+    await _tool(client, "mail_reply_to_email")(
+        email_id="orig1", text_body="reply", **kwargs
+    )
+    return client.call.call_args_list[2][0][1][0][1]["create"]["draft"]
+
+
+async def test_reply_to_own_message_goes_to_its_recipients():
+    # Regression: a follow-up on our own sent message was addressed to
+    # ourselves, so it reached nobody (Watson's chases, June-August 2026).
+    draft = await _reply_draft(_own_sent())
+    assert [a["email"] for a in draft["to"]] == ["bob@example.com"]
+    assert "cc" not in draft
+
+
+async def test_reply_all_to_own_message_keeps_to_and_cc():
+    draft = await _reply_draft(_own_sent(), reply_all=True)
+    assert [a["email"] for a in draft["to"]] == ["bob@example.com"]
+    assert [a["email"] for a in draft["cc"]] == ["carol@example.com"]
+
+
+async def test_reply_to_own_message_is_case_insensitive_about_us():
+    draft = await _reply_draft(_own_sent(**{"from": [{"email": "Alice@Example.com"}]}))
+    assert [a["email"] for a in draft["to"]] == ["bob@example.com"]
+
+
+async def test_reply_to_a_note_to_self_still_goes_to_self():
+    draft = await _reply_draft(_own_sent(to=[{"email": "alice@example.com"}], cc=[]))
+    assert [a["email"] for a in draft["to"]] == ["alice@example.com"]
+
+
+async def test_reply_to_someone_else_is_unchanged():
+    draft = await _reply_draft(_ORIGINAL_EMAIL)
+    assert [a["email"] for a in draft["to"]] == ["bob@example.com"]
+
+
 async def test_reply_email_not_found():
     client = mock_client()
     client.call.return_value = [("Email/get", {"list": []}, "g")]
