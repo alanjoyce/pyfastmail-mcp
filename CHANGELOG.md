@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.11 (2026-11-22)
+
+### Changed (Watson carry-patch)
+- `tools/mail/send.py` — `mail_send_email` refuses a subject that begins
+  "Re:". Such a message is a reply, and sent from here it carries no
+  `In-Reply-To` or `References`, so the recipient gets a second conversation
+  that only looks like part of the first. Found the same evening as 0.3.10:
+  Watson followed up his own note to a house-sitter with a fresh send titled
+  "Re: Mail on the courtyard cabinet", because he believed a reply to his own
+  message would come back to him (true until 0.3.10), and the two notes sat
+  apart in both inboxes. The error names `mail_reply_to_email` and says that a
+  reply to one's own message goes to its recipients. Covered in
+  `tests/mail/test_send.py`.
+
 ## 0.3.10 (2026-11-22)
 
 ### Fixed (Watson carry-patch)

@@ -1,6 +1,7 @@
 """Send email tool."""
 
 import json
+import re
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -15,6 +16,7 @@ from pyfastmail_mcp.tools.mail.disclosure import maybe_inject_disclosure
 from pyfastmail_mcp.tools.mail.identities import _find_identity
 
 _MAX_RECIPIENTS = 50
+_REPLY_SUBJECT = re.compile(r"^\s*re\s*:", re.IGNORECASE)
 
 
 def register(server: FastMCP, client: JMAPClient) -> None:
@@ -51,6 +53,26 @@ def register(server: FastMCP, client: JMAPClient) -> None:
                 ``null`` if the account has no Sent role mailbox.
         """
         try:
+            # Watson carry-patch: a subject that begins "Re:" says this is a
+            # reply, and a reply sent from here carries no In-Reply-To or
+            # References, so the recipient gets a second, disconnected
+            # conversation that only looks like part of the first.
+            if _REPLY_SUBJECT.match(subject or ""):
+                return json.dumps(
+                    {
+                        "error": (
+                            "This subject begins 'Re:', so it is a reply, and "
+                            "mail_send_email would start a new conversation "
+                            "that only looks like one. Use mail_reply_to_email "
+                            "with the email_id of the message being answered "
+                            "or followed up. That includes a message of your "
+                            "own: a reply to something you sent goes to the "
+                            "people it went to, not back to you. If this "
+                            "really is a new conversation, give it a subject "
+                            "of its own."
+                        )
+                    }
+                )
             total_recipients = len(to) + len(cc or []) + len(bcc or [])
             if total_recipients > _MAX_RECIPIENTS:
                 return json.dumps(

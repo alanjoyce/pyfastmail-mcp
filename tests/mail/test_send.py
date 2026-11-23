@@ -377,3 +377,23 @@ async def test_send_submission_failure_leaves_draft_intact():
     # Exactly two client.call invocations: Identity/get and the send batch.
     # No follow-up Email/set destroy was issued.
     assert client.call.call_count == 2
+
+
+async def test_send_refuses_a_reply_subject():
+    """A 'Re:' subject is a reply; sent from here it would not thread."""
+    client = mock_client()
+    for subject in ("Re: Mail on the courtyard cabinet", "RE: quote", "  re : hello"):
+        result = await _tool(client, "mail_send_email")(
+            to=["bob@example.com"], subject=subject, text_body="Hello"
+        )
+        assert "mail_reply_to_email" in json.loads(result)["error"]
+    client.call.assert_not_called()
+
+
+async def test_send_allows_a_subject_that_only_contains_re():
+    client = mock_client()
+    client.call.side_effect = [_identity_response(), _send_response()]
+    result = await _tool(client, "mail_send_email")(
+        to=["bob@example.com"], subject="Regarding the mail: reminder", text_body="Hello"
+    )
+    assert json.loads(result)["sent"] is True
